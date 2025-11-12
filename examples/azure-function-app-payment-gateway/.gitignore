@@ -1,0 +1,38 @@
+# Terraform files
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars.backup
+*.tfplan
+*.tfplan.binary
+tfplan.json
+crash.log
+crash.*.log
+
+# Allow example terraform.tfvars
+!terraform.tfvars
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.python_packages/
+venv/
+env/
+ENV/
+
+# Azure Functions
+local.settings.json
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Secrets
+*.pem
+*.key
+secrets/

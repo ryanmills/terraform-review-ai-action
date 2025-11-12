@@ -1,0 +1,178 @@
+name: Deploy Function App Payment Gateway
+
+on:
+  pull_request:
+    paths:
+      - 'examples/azure-function-app-payment-gateway/**'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy'
+        required: true
+        type: choice
+        options:
+          - dev
+          - test
+          - prod
+
+permissions:
+  contents: read
+  pull-requests: write
+  models: read
+
+jobs:
+  terraform-plan:
+    name: Terraform Plan - ${{ matrix.environment }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        environment: [dev, test, prod]
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.0
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Terraform Init
+        working-directory: examples/azure-function-app-payment-gateway/environments/${{ matrix.environment }}
+        run: terraform init
+
+      - name: Terraform Validate
+        working-directory: examples/azure-function-app-payment-gateway/environments/${{ matrix.environment }}
+        run: terraform validate
+
+      - name: Terraform Plan
+        working-directory: examples/azure-function-app-payment-gateway/environments/${{ matrix.environment }}
+        run: |
+          terraform plan -out=tfplan.binary
+          terraform show -json tfplan.binary > tfplan.json
+
+      - name: Upload Terraform Plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ matrix.environment }}
+          path: examples/azure-function-app-payment-gateway/environments/${{ matrix.environment }}/tfplan.json
+
+      - name: AI Review with Terraform Review Action
+        uses: thomast1906/terraform-review-ai-action@v1
+        with:
+          ai-provider: 'github-models'
+          github-models-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          terraform-plan-path: examples/azure-function-app-payment-gateway/environments/${{ matrix.environment }}/tfplan.json
+          terraform-directory: examples/azure-function-app-payment-gateway/environments/${{ matrix.environment }}
+          analysis-preset: 'production-ready'
+          analysis-depth: 'detailed'
+          analysis-style: 'severity'
+
+  terraform-apply:
+    name: Terraform Apply - ${{ github.event.inputs.environment }}
+    runs-on: ubuntu-latest
+    needs: terraform-plan
+    if: github.event_name == 'workflow_dispatch'
+    environment: ${{ github.event.inputs.environment }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.0
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Terraform Init
+        working-directory: examples/azure-function-app-payment-gateway/environments/${{ github.event.inputs.environment }}
+        run: terraform init
+
+      - name: Terraform Apply
+        working-directory: examples/azure-function-app-payment-gateway/environments/${{ github.event.inputs.environment }}
+        run: terraform apply -auto-approve
+
+  deploy-function:
+    name: Deploy Function Code - ${{ github.event.inputs.environment }}
+    runs-on: ubuntu-latest
+    needs: terraform-apply
+    if: github.event_name == 'workflow_dispatch'
+    environment: ${{ github.event.inputs.environment }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Azure Functions Core Tools
+        run: |
+          curl https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > microsoft.gpg
+          sudo mv microsoft.gpg /etc/apt/trusted.gpg.d/microsoft.gpg
+          sudo sh -c 'echo "deb [arch=amd64] https://packages.microsoft.com/repos/microsoft-ubuntu-$(lsb_release -cs)-prod $(lsb_release -cs) main" > /etc/apt/sources.list.d/dotnetdev.list'
+          sudo apt-get update
+          sudo apt-get install azure-functions-core-tools-4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Get Function App Name
+        id: get-function-name
+        working-directory: examples/azure-function-app-payment-gateway/environments/${{ github.event.inputs.environment }}
+        run: |
+          terraform init
+          FUNCTION_NAME=$(terraform output -raw function_app_name)
+          echo "function_name=$FUNCTION_NAME" >> $GITHUB_OUTPUT
+
+      - name: Deploy Function App
+        working-directory: examples/azure-function-app-payment-gateway/function-code
+        run: |
+          pip install -r requirements.txt --target .python_packages/lib/site-packages
+          func azure functionapp publish ${{ steps.get-function-name.outputs.function_name }} --python
+
+      - name: Update Stripe Secrets
+        if: github.event.inputs.environment != 'prod'
+        run: |
+          # Get Key Vault name from Terraform output
+          cd examples/azure-function-app-payment-gateway/environments/${{ github.event.inputs.environment }}
+          terraform init
+          KEY_VAULT_NAME=$(terraform output -raw key_vault_name)
+          
+          # Update secrets (using test keys for non-prod environments)
+          az keyvault secret set \
+            --vault-name $KEY_VAULT_NAME \
+            --name stripe-api-key \
+            --value "${{ secrets.STRIPE_TEST_API_KEY }}"
+          
+          az keyvault secret set \
+            --vault-name $KEY_VAULT_NAME \
+            --name stripe-webhook-secret \
+            --value "${{ secrets.STRIPE_TEST_WEBHOOK_SECRET }}"
+
+      - name: Deployment Summary
+        run: |
+          echo "### ✅ Deployment Complete!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment:** ${{ github.event.inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Function App:** ${{ steps.get-function-name.outputs.function_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "#### Next Steps:" >> $GITHUB_STEP_SUMMARY
+          echo "1. Configure Stripe webhook URL in your Stripe dashboard" >> $GITHUB_STEP_SUMMARY
+          echo "2. Test the payment endpoint with sample requests" >> $GITHUB_STEP_SUMMARY
+          echo "3. Monitor Application Insights for logs and metrics" >> $GITHUB_STEP_SUMMARY
