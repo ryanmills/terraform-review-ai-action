@@ -2,6 +2,12 @@
 
 This example demonstrates a production-ready, multi-environment Azure Function App solution using **Azure Verified Modules (AVM)** to create a payment gateway that processes credit card information via Stripe API.
 
+## 📚 Documentation
+
+- **[Architecture Overview](ARCHITECTURE.md)** - Detailed architecture diagrams and design decisions
+- **[Security & Compliance](SECURITY.md)** - Security controls, compliance, and best practices
+- **[Deployment Guide](#deployment)** - Step-by-step deployment instructions (below)
+
 ## Architecture Overview
 
 This solution deploys:

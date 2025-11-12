@@ -9,6 +9,9 @@ tfplan.json
 crash.log
 crash.*.log
 
+# Allow example terraform.tfvars
+!terraform.tfvars
+
 # Python
 __pycache__/
 *.py[cod]
